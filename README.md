@@ -29,13 +29,12 @@ mdpclient and mdpworker implemented too
 
 please feel free for contribute and updating code 
 
-#Build and install from command line
+#Build and install
 
 Before building you need to: 
 
-zmq v3.0 library and later 
-
-Qt v4.5 and later
+    zmq v3.0 library and later 
+    Qt v4.5 and later
 
 Test on windows using Qt5.0 and visual studio 10: works ok
 
