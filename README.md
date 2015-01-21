@@ -35,6 +35,8 @@ Before building you need to:
 
     zmq v3.0 library and later 
     Qt v4.5 and later
+    qmake qmq.pro
+    make
 
 Test on windows using Qt5.0 and visual studio 10: works ok
 
