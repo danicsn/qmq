@@ -35,7 +35,7 @@ public:
     QUdpSocket udpsock;         //  UDP socket for send/recv
     int port_nbr;               //  UDP port number we work on
     int interval;               //  Beacon broadcast interval
-    QTime  ping_at;             //  Next broadcast time
+    qint64 ping_at;             //  Next broadcast time
     Frame* transmit;          //  Beacon transmit data
     Frame* filter;            //  Beacon filter data
     QHostAddress broadcast;     //  Our broadcast address
@@ -46,8 +46,7 @@ public:
 
 void BeaconHandler::prepareUdp(const QString& iface)
 {
-    if(udpsock.isOpen())
-        udpsock.close();
+    udpsock.abort();
 
     hostname = "";
     //  Get the network interface from iface or else use first
@@ -86,12 +85,12 @@ void BeaconHandler::prepareUdp(const QString& iface)
        }
     }
 
-    if(bind_to)
+    if(bind_to || send_to)
     {
         broadcast.setAddress(send_to);
 #ifdef Q_OS_WIN
         QHostAddress address(bind_to);
-#else Q_OS_LINUX
+#elif defined(Q_OS_LINUX)
         QHostAddress address(send_to); // dont work on centos Qt 4.7
 #endif
 
@@ -133,9 +132,10 @@ int BeaconHandler::handlePipe()
     }
     else if(command == "PUBLISH")
     {
+        delete transmit;
         pipe->recv("fi", &transmit, &interval);
         assert(transmit->size() <= 255);
-        ping_at = QTime::currentTime();
+        ping_at = clock_mono();
     }
     else if(command == "SILENCE") {
         delete transmit;
@@ -195,7 +195,7 @@ int BeaconHandler::handleUdp()
     //  If still a valid beacon, send on to the API
     if (is_valid) {
         Messages msg;
-        msg.append(udpsock.peerName());
+        msg.append(peerAddress.toString());
         msg.append(frame);
         msg.send(*pipe);
     }
@@ -208,31 +208,34 @@ void qbeacon(Socket* pipe, void*)
     BeaconHandler beacon(pipe);
     pipe->signal(0);
 
-    Poller poll;
-    poll.append(pipe);
-
     while (!beacon.terminated) {
 
+        int fd = beacon.udpsock.socketDescriptor();
+        zmq_pollitem_t pollitems[] = { { pipe->resolve(), 0, ZMQ_POLLIN, 0 },
+                                       { NULL, fd, ZMQ_POLLIN, 0 } };
         long timeout = -1;
         if(beacon.transmit)
         {
-            timeout = (long)(beacon.ping_at.msecsTo(QTime::currentTime()));
+            timeout = (long)(beacon.ping_at - clock_mono());
             if(timeout < 0) timeout = 0;
         }
 
-        Socket* sock = (Socket*)poll.wait(timeout);
-        if(sock)
+        int pollset_size = beacon.udpsock.state() != QUdpSocket::UnconnectedState ? 2 : 1;
+        if(zmq_poll(pollitems, pollset_size, timeout) == -1)
+            break; // interupted
+
+        if(pollitems[0].revents)
             beacon.handlePipe();
-        if(beacon.udpsock.isValid() && beacon.udpsock.waitForReadyRead(timeout + 1)) // -1 is not defined
+        if(pollitems[1].revents)
             beacon.handleUdp();
 
         if(beacon.transmit
-                && QTime::currentTime() >= beacon.ping_at)
+                && clock_mono() >= beacon.ping_at)
         {
             //  Send beacon to any listening peers
-            if(beacon.udpsock.writeDatagram(beacon.transmit->bdata(), beacon.broadcast, beacon.port_nbr))
-                //beacon.prepareUdp("");
-                beacon.ping_at = QTime::currentTime().addMSecs(beacon.interval);
+            if(beacon.udpsock.writeDatagram(beacon.transmit->bdata(), beacon.broadcast, beacon.port_nbr) == -1)
+                beacon.prepareUdp("");
+            beacon.ping_at = clock_mono() + beacon.interval;
         }
     }
 }
@@ -280,8 +283,8 @@ void beaconTest(bool verbose)
         content.recv(listener);
         assert (content.size() == 2);
         QByteArray data = content.bdata();
-        assert (data.at(0) == 0xCA);
-        assert (data.at(1) == 0xFE);
+        assert (uchar(data.at(0)) == 0xCA);
+        assert (uchar(data.at(1)) == 0xFE);
         speaker->sendx("SILENCE", NULL);
     }
     srnet->closeSocket(&listener);
